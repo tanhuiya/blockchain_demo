@@ -1,11 +1,11 @@
 package main
 
 import (
-	"strconv"
-	"log"
 	"flag"
-	"os"
 	"fmt"
+	"log"
+	"os"
+	"strconv"
 )
 
 type CLI struct {
@@ -15,19 +15,6 @@ func (cli *CLI) createBlockChain(address string) {
 	bc := CreateBlockChain(address)
 	bc.db.Close()
 	fmt.Println("Done !")
-}
-
-func (cli *CLI) getBalance(address string) {
-	bc := NewBlockChain(address)
-	defer bc.db.Close()
-
-	balance := 0
-	UTXOs := bc.FindUTXO(address)
-
-	for _, out := range UTXOs {
-		balance += out.Value
-	}
-	fmt.Printf("Balance of %s : %d \n", address, balance)
 }
 
 func (cli *CLI) printUseage() {
@@ -47,9 +34,11 @@ func (cli *CLI) validateArgs() {
 
 func (cli *CLI) Run() {
 	cli.validateArgs()
-	
+
 	getBalanceCmd := flag.NewFlagSet("getbalance", flag.ExitOnError)
 	createBlockCmd := flag.NewFlagSet("createblockchain", flag.ExitOnError)
+	createWalletCmd := flag.NewFlagSet("createwallet", flag.ExitOnError)
+	listAddressesCmd := flag.NewFlagSet("listAddresses", flag.ExitOnError)
 	sendCmd := flag.NewFlagSet("send", flag.ExitOnError)
 	printChainCmd := flag.NewFlagSet("printchain", flag.ExitOnError)
 
@@ -77,6 +66,16 @@ func (cli *CLI) Run() {
 		}
 	case "printchain":
 		err := printChainCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Panic(err)
+		}
+	case "createwallet":
+		err := createWalletCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Panic(err)
+		}
+	case "listaddresses":
+		err := listAddressesCmd.Parse(os.Args[2:])
 		if err != nil {
 			log.Panic(err)
 		}
@@ -108,9 +107,15 @@ func (cli *CLI) Run() {
 		}
 		cli.send(*sendFrom, *sendTo, *sendAmount)
 	}
+	if createWalletCmd.Parsed() {
+		cli.createWallet()
+	}
+	if listAddressesCmd.Parsed() {
+		cli.ListAddresses()
+	}
 }
 
-func (cli *CLI) send(from ,to string , amount int) {
+func (cli *CLI) send(from, to string, amount int) {
 	bc := NewBlockChain(from)
 	defer bc.db.Close()
 

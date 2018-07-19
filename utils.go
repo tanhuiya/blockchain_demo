@@ -1,9 +1,9 @@
 package main
 
 import (
-	"log"
-	"encoding/binary"
 	"bytes"
+	"encoding/binary"
+	"log"
 )
 
 func IntToHex(num int64) []byte {
@@ -13,4 +13,10 @@ func IntToHex(num int64) []byte {
 		log.Panic(err)
 	}
 	return buff.Bytes()
+}
+
+func ReverseBytes(data []byte) {
+	for i, j := 0, len(data)-1; i < j; i, j = i+1, j-1 {
+		data[i], data[j] = data[j], data[i]
+	}
 }

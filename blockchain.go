@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -73,7 +77,7 @@ func CreateBlockChain(address string) *BlockChain {
 	return &bc
 }
 
-func NewBlockChain(address string) *BlockChain {
+func NewBlockChain() *BlockChain {
 	if dbExist() == false {
 		fmt.Printf("No database found ,create one first ")
 		os.Exit(1)
@@ -98,8 +102,14 @@ func NewBlockChain(address string) *BlockChain {
 	return &bc
 }
 
-func (bc *BlockChain) MineBlock(transactions []*Transaction) {
+func (bc *BlockChain) MineBlock(transactions []*Transaction) *Block {
 	var lastHash []byte
+
+	for _, tx := range transactions {
+		if bc.VerifyTransaction(tx) != true {
+			log.Panic("ERROR: Invalid transaction")
+		}
+	}
 
 	err := bc.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(blocksBucket))
@@ -126,6 +136,7 @@ func (bc *BlockChain) MineBlock(transactions []*Transaction) {
 	if err != nil {
 		log.Panic(err)
 	}
+	return newBlock
 }
 
 func (bc *BlockChain) Iterator() *BlockChainIterator {
@@ -146,4 +157,88 @@ func (i *BlockChainIterator) Next() *Block {
 	}
 	i.currentHash = block.PrevBlockHash
 	return block
+}
+
+func (bc *BlockChain) VerifyTransaction(tx *Transaction) bool {
+	if tx.IsCoinbase() {
+		return true
+	}
+	prevTXs := make(map[string]Transaction)
+	for _, vin := range tx.Vin {
+		prevTX, err := bc.FindTransaction(vin.Txid)
+		if err != nil {
+			log.Panic(err)
+		}
+		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
+	}
+	return tx.Verify(prevTXs)
+}
+
+func (bc *BlockChain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateKey) {
+	prevTXs := make(map[string]Transaction)
+	for _, vin := range tx.Vin {
+		prevTX, err := bc.FindTransaction(vin.Txid)
+		if err != nil {
+			log.Panic(err)
+		}
+		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
+	}
+	tx.Sign(privKey, prevTXs)
+}
+
+func (bc *BlockChain) FindTransaction(ID []byte) (Transaction, error) {
+	bci := bc.Iterator()
+
+	for {
+		block := bci.Next()
+
+		for _, tx := range block.Transactions {
+			if bytes.Compare(tx.ID, ID) == 0 {
+				return *tx, nil
+			}
+		}
+		if len(block.PrevBlockHash) == 0 {
+			break
+		}
+	}
+	return Transaction{}, errors.New("Transaction is not found")
+}
+
+func (bc *BlockChain) FindUTXO() map[string]TXOutputs {
+	UTXO := make(map[string]TXOutputs)
+	spentTXOs := make(map[string][]int)
+	bci := bc.Iterator()
+
+	for {
+		block := bci.Next()
+		for _, tx := range block.Transactions {
+			txID := hex.EncodeToString(tx.ID)
+
+		OutPuts:
+			for outIdx, out := range tx.Vout {
+				if spentTXOs[txID] != nil {
+					for _, spendOutIdx := range spentTXOs[txID] {
+						if spendOutIdx == outIdx {
+							continue OutPuts
+						}
+					}
+				}
+
+				outs := UTXO[txID]
+				outs.Outputs = append(outs.Outputs, out)
+				UTXO[txID] = outs
+			}
+			if tx.IsCoinbase() == false {
+				// 统计所有输入
+				for _, in := range tx.Vin {
+					inTxID := hex.EncodeToString(in.Txid)
+					spentTXOs[inTxID] = append(spentTXOs[inTxID], in.Vout)
+				}
+			}
+		}
+		if len(block.PrevBlockHash) == 0 {
+			break
+		}
+	}
+	return UTXO
 }

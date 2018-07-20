@@ -1,101 +1,166 @@
 package main
 
 import (
-	"bytes"
 	"encoding/hex"
-	"errors"
+	"fmt"
+	"log"
+
+	"github.com/boltdb/bolt"
 )
 
-func (bc *BlockChain) FindUnspentTransactions(pubKeyHash []byte) []Transaction {
-	var unspentTXs []Transaction
-	spentTXOs := make(map[string][]int)
-	bci := bc.Iterator()
+const utxoBucket = "chainstate"
 
-	for {
-		block := bci.Next()
-		for _, tx := range block.Transactions {
-			txID := hex.EncodeToString(tx.ID)
-
-		OutPuts:
-			for outIdx, out := range tx.Vout {
-				if spentTXOs[txID] != nil {
-					for _, spendOutIdx := range spentTXOs[txID] {
-						if spendOutIdx == outIdx {
-							continue OutPuts
-						}
-					}
-				}
-				if out.IsLockedWithKey(pubKeyHash) {
-					unspentTXs = append(unspentTXs, *tx)
-				}
-			}
-			if tx.IsCoinbase() == false {
-				// 统计所有输入
-				for _, in := range tx.Vin {
-					if in.UsesKey(pubKeyHash) {
-						inTxID := hex.EncodeToString(in.Txid)
-						spentTXOs[inTxID] = append(spentTXOs[inTxID], in.Vout)
-					}
-				}
-			}
-		}
-		if len(block.PrevBlockHash) == 0 {
-			break
-		}
-	}
-	return unspentTXs
+type UTXOSet struct {
+	mBlockChain *BlockChain
 }
 
-func (bc *BlockChain) FindUTXO(pubKeyHash []byte) []TXOutput {
-	var UTXOs []TXOutput
-	unspentTransactions := bc.FindUnspentTransactions(pubKeyHash)
+func (u UTXOSet) Reindex() {
+	db := u.mBlockChain.db
+	bucketName := []byte(utxoBucket)
 
-	for _, tx := range unspentTransactions {
-		for _, out := range tx.Vout {
-			if out.IsLockedWithKey(pubKeyHash) {
-				UTXOs = append(UTXOs, out)
+	err := db.Update(func(tx *bolt.Tx) error {
+		err := tx.DeleteBucket(bucketName)
+		_, err = tx.CreateBucket(bucketName)
+		if err != nil {
+			log.Panic(err)
+		}
+		return nil
+	})
+
+	UTXO := u.mBlockChain.FindUTXO()
+
+	err = db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketName)
+		for txID, outs := range UTXO {
+			key, err := hex.DecodeString(txID)
+			err = b.Put(key, outs.Serialize())
+			if err != nil {
+				log.Panic(err)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		log.Panic(err)
+	}
+}
+
+func (u UTXOSet) FindUTXO(pubKeyHash []byte) []TXOutput {
+	var UTXOs []TXOutput
+	db := u.mBlockChain.db
+
+	err := db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(utxoBucket))
+		c := b.Cursor()
+
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			outs := DeserializeOutputs(v)
+			for _, out := range outs.Outputs {
+				if out.IsLockedWithKey(pubKeyHash) {
+					UTXOs = append(UTXOs, out)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Panic(err)
 	}
 	return UTXOs
 }
 
-func (bc *BlockChain) FindSpendableOutputs(pubKeyHash []byte, amount int) (int, map[string][]int) {
+func (u UTXOSet) CountTransactions() int {
+	db := u.mBlockChain.db
+	counter := 0
+
+	err := db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(utxoBucket))
+		c := b.Cursor()
+
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			counter++
+		}
+		return nil
+	})
+	if err != nil {
+		log.Panic(err)
+	}
+	return counter
+}
+
+func (u UTXOSet) FindSpendableOutputs(pubKeyHash []byte, amount int) (int, map[string][]int) {
 	unspentOutputs := make(map[string][]int)
-	unspentTXs := bc.FindUnspentTransactions(pubKeyHash)
 	accumulated := 0
+	db := u.mBlockChain.db
 
-Work:
-	for _, tx := range unspentTXs {
-		txID := hex.EncodeToString(tx.ID)
-		for outIdx, out := range tx.Vout {
-			if out.IsLockedWithKey(pubKeyHash) && accumulated < amount {
-				accumulated += out.Value
-				unspentOutputs[txID] = append(unspentOutputs[txID], outIdx)
+	err := db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(utxoBucket))
+		c := b.Cursor()
 
-				if accumulated >= amount {
-					break Work
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			txID := hex.EncodeToString(k)
+			outs := DeserializeOutputs(v)
+
+			for outIdx, out := range outs.Outputs {
+				if out.IsLockedWithKey(pubKeyHash) && accumulated < amount {
+					accumulated += out.Value
+					unspentOutputs[txID] = append(unspentOutputs[txID], outIdx)
 				}
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		log.Panic(err)
 	}
 	return accumulated, unspentOutputs
 }
 
-func (bc *BlockChain) FindTransaction(ID []byte) (Transaction, error) {
-	bci := bc.Iterator()
-
-	for {
-		block := bci.Next()
+func (u UTXOSet) Update(block *Block) {
+	db := u.mBlockChain.db
+	err := db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(utxoBucket))
 
 		for _, tx := range block.Transactions {
-			if bytes.Compare(tx.ID, ID) == 0 {
-				return *tx, nil
+			fmt.Println(tx.String())
+
+			if tx.IsCoinbase() == false {
+				for _, vin := range tx.Vin {
+					updatedOuts := TXOutputs{}
+					outsBytes := b.Get(vin.Txid)
+					outs := DeserializeOutputs(outsBytes)
+
+					for outIdx, out := range outs.Outputs {
+						// 除了当前使用的out的集合
+						if outIdx != vin.Vout {
+							updatedOuts.Outputs = append(updatedOuts.Outputs, out)
+						}
+					}
+					if len(updatedOuts.Outputs) == 0 {
+						err := b.Delete(vin.Txid)
+						if err != nil {
+							log.Panic(err)
+						}
+					} else {
+						err := b.Put(vin.Txid, updatedOuts.Serialize())
+						if err != nil {
+							log.Panic(err)
+						}
+					}
+				}
+			}
+			newOutputs := TXOutputs{}
+			for _, out := range tx.Vout {
+				newOutputs.Outputs = append(newOutputs.Outputs, out)
+			}
+			err := b.Put(tx.ID, newOutputs.Serialize())
+			if err != nil {
+				log.Panic(err)
 			}
 		}
-		if len(block.PrevBlockHash) == 0 {
-			break
-		}
+		return nil
+	})
+	if err != nil {
+		log.Panic(err)
 	}
-	return Transaction{}, errors.New("Transaction is not found")
 }

@@ -1,19 +1,18 @@
 package main
 
 import (
-	"crypto/sha256"
-	"log"
-	"encoding/gob"
 	"bytes"
+	"encoding/gob"
+	"log"
 	"time"
 )
 
 type Block struct {
-	Timestamp		int64
-	Transactions	[]*Transaction
-	PrevBlockHash 	[]byte
-	Hash			[]byte
-	Nonce 			int
+	Timestamp     int64
+	Transactions  []*Transaction
+	PrevBlockHash []byte
+	Hash          []byte
+	Nonce         int
 }
 
 func (b *Block) Serialize() []byte {
@@ -39,11 +38,11 @@ func DeserializeBlock(d []byte) *Block {
 
 func NewBlock(transactions []*Transaction, preBlockHash []byte) *Block {
 	block := &Block{
-		Timestamp: time.Now().Unix(),
-		Transactions: transactions,
+		Timestamp:     time.Now().Unix(),
+		Transactions:  transactions,
 		PrevBlockHash: preBlockHash,
-		Hash: []byte{},
-		Nonce: 0,
+		Hash:          []byte{},
+		Nonce:         0,
 	}
 	pow := NewProofOfWork(block)
 	nonce, hash := pow.Run()
@@ -52,18 +51,15 @@ func NewBlock(transactions []*Transaction, preBlockHash []byte) *Block {
 	return block
 }
 
-
 func NewGenesisBlock(coinbase *Transaction) *Block {
 	return NewBlock([]*Transaction{coinbase}, []byte{})
 }
 
 func (b *Block) HashTransactions() []byte {
-	var txHashes [][]byte
-	var txHash [32]byte
-
+	var transactions [][]byte
 	for _, tx := range b.Transactions {
-		txHashes = append(txHashes, tx.ID)
+		transactions = append(transactions, tx.Serialize())
 	}
-	txHash = sha256.Sum256(bytes.Join(txHashes,[]byte{}))
-	return txHash[:]
+	mTree := NewMerkleTree(transactions)
+	return mTree.RootNode.Data
 }
